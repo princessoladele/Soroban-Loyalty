@@ -89,8 +89,6 @@ impl TokenContract {
         Self::require_admin(&env);
         assert!(amount > 0, "amount must be positive");
 
-        // Build key once; reuse for both read and write — avoids a second
-        // Address clone that the old balance_of/set_balance pair incurred.
         let key = DataKey::Balance(to.clone());
         let new_bal = Self::read_balance(&env, &key)
             .checked_add(amount)
@@ -101,6 +99,13 @@ impl TokenContract {
             .checked_add(amount)
             .expect("overflow");
         Self::set_total_supply(&env, new_supply);
+
+        // Invariant: balance and total supply are non-negative after mint.
+        #[cfg(debug_assertions)]
+        {
+            debug_assert!(new_bal >= 0, "invariant: balance >= 0 after mint");
+            debug_assert!(new_supply >= 0, "invariant: total_supply >= 0 after mint");
+        }
 
         env.events()
             .publish((MINT, symbol_short!("to"), to), amount);
@@ -113,13 +118,20 @@ impl TokenContract {
         let key = DataKey::Balance(from.clone());
         let bal = Self::read_balance(&env, &key);
         assert!(bal >= amount, "insufficient balance");
-        Self::write_balance(&env, &key, bal - amount);
+        let new_bal = bal - amount;
+        Self::write_balance(&env, &key, new_bal);
 
-        // Use checked_sub to guard against total_supply underflow.
         let new_supply = Self::total_supply(&env)
             .checked_sub(amount)
             .expect("underflow");
         Self::set_total_supply(&env, new_supply);
+
+        // Invariant: balance and total supply remain non-negative after burn.
+        #[cfg(debug_assertions)]
+        {
+            debug_assert!(new_bal >= 0, "invariant: balance >= 0 after burn");
+            debug_assert!(new_supply >= 0, "invariant: total_supply >= 0 after burn");
+        }
 
         env.events()
             .publish((BURN, symbol_short!("from"), from), amount);
@@ -129,22 +141,33 @@ impl TokenContract {
         from.require_auth();
         assert!(amount > 0, "amount must be positive");
 
-        // Build both keys up front so each address is cloned exactly once.
         let from_key = DataKey::Balance(from.clone());
         let to_key = DataKey::Balance(to.clone());
 
-        // Read both balances before writing either — keeps reads and writes
-        // clearly separated and avoids any accidental double-read.
         let from_bal = Self::read_balance(&env, &from_key);
         assert!(from_bal >= amount, "insufficient balance");
         let to_bal = Self::read_balance(&env, &to_key);
 
-        Self::write_balance(&env, &from_key, from_bal - amount);
-        Self::write_balance(
-            &env,
-            &to_key,
-            to_bal.checked_add(amount).expect("overflow"),
-        );
+        // Capture supply before to verify it is unchanged after transfer.
+        #[cfg(debug_assertions)]
+        let supply_before = Self::total_supply(&env);
+
+        let new_from_bal = from_bal - amount;
+        let new_to_bal = to_bal.checked_add(amount).expect("overflow");
+        Self::write_balance(&env, &from_key, new_from_bal);
+        Self::write_balance(&env, &to_key, new_to_bal);
+
+        // Invariants: both balances non-negative; total supply unchanged.
+        #[cfg(debug_assertions)]
+        {
+            debug_assert!(new_from_bal >= 0, "invariant: sender balance >= 0 after transfer");
+            debug_assert!(new_to_bal >= 0, "invariant: recipient balance >= 0 after transfer");
+            debug_assert_eq!(
+                Self::total_supply(&env),
+                supply_before,
+                "invariant: total_supply unchanged by transfer"
+            );
+        }
 
         env.events()
             .publish((TRANSFER, symbol_short!("from"), from), (to, amount));
@@ -249,6 +272,51 @@ mod tests {
         let bob = Address::generate(&env);
         client.mint(&alice, &50);
         client.transfer(&alice, &bob, &100);
+    }
+
+    // ── Invariant tests ───────────────────────────────────────────────────────
+
+    #[test]
+    fn test_invariant_supply_equals_sum_after_mint() {
+        let (env, _admin, client) = setup();
+        let u1 = Address::generate(&env);
+        let u2 = Address::generate(&env);
+        client.mint(&u1, &300);
+        client.mint(&u2, &700);
+        assert_eq!(
+            client.total_supply_view(),
+            client.balance(&u1) + client.balance(&u2),
+            "total_supply must equal sum of balances"
+        );
+    }
+
+    #[test]
+    fn test_invariant_supply_equals_sum_after_burn() {
+        let (env, _admin, client) = setup();
+        let user = Address::generate(&env);
+        client.mint(&user, &1000);
+        client.burn(&user, &400);
+        assert_eq!(client.total_supply_view(), client.balance(&user));
+        assert!(client.balance(&user) >= 0);
+    }
+
+    #[test]
+    fn test_invariant_supply_unchanged_by_transfer() {
+        let (env, _admin, client) = setup();
+        let alice = Address::generate(&env);
+        let bob = Address::generate(&env);
+        client.mint(&alice, &500);
+        let supply_before = client.total_supply_view();
+        client.transfer(&alice, &bob, &200);
+        assert_eq!(
+            client.total_supply_view(),
+            supply_before,
+            "transfer must not change total_supply"
+        );
+        assert_eq!(
+            client.balance(&alice) + client.balance(&bob),
+            supply_before
+        );
     }
 
     // ── Benchmarks ────────────────────────────────────────────────────────────

@@ -90,6 +90,13 @@ impl CampaignContract {
             .persistent()
             .set(&DataKey::Campaign(id), &campaign);
 
+        // Invariant: newly created campaign starts with zero claims and positive reward.
+        #[cfg(debug_assertions)]
+        {
+            debug_assert_eq!(campaign.total_claimed, 0, "invariant: new campaign total_claimed == 0");
+            debug_assert!(campaign.reward_amount > 0, "invariant: reward_amount > 0");
+        }
+
         env.events()
             .publish((CAMPAIGN_CREATED, symbol_short!("id"), id), merchant);
 
@@ -112,6 +119,10 @@ impl CampaignContract {
     /// Called by the rewards contract to increment the claim counter.
     pub fn record_claim(env: Env, campaign_id: u64) {
         let mut campaign = Self::get_campaign_internal(&env, campaign_id);
+
+        #[cfg(debug_assertions)]
+        let claimed_before = campaign.total_claimed;
+
         campaign.total_claimed = campaign
             .total_claimed
             .checked_add(1)
@@ -119,6 +130,13 @@ impl CampaignContract {
         env.storage()
             .persistent()
             .set(&DataKey::Campaign(campaign_id), &campaign);
+
+        // Invariant: total_claimed is strictly monotonically increasing.
+        #[cfg(debug_assertions)]
+        debug_assert!(
+            campaign.total_claimed > claimed_before,
+            "invariant: total_claimed must increase after record_claim"
+        );
     }
 
     pub fn get_campaign(env: Env, campaign_id: u64) -> Campaign {
@@ -198,5 +216,43 @@ mod tests {
         // advance ledger past expiry
         env.ledger().with_mut(|l| l.timestamp = expiry + 1);
         assert!(!client.is_active(&id));
+    }
+
+    // ── Invariant tests ───────────────────────────────────────────────────────
+
+    #[test]
+    fn test_invariant_new_campaign_total_claimed_zero() {
+        let (env, _admin, client) = setup();
+        let merchant = Address::generate(&env);
+        let expiry = env.ledger().timestamp() + 86400;
+        let id = client.create_campaign(&merchant, &100, &expiry);
+        let c = client.get_campaign(&id);
+        assert_eq!(c.total_claimed, 0, "invariant: new campaign total_claimed == 0");
+        assert!(c.reward_amount > 0, "invariant: reward_amount > 0");
+    }
+
+    #[test]
+    fn test_invariant_total_claimed_monotonic() {
+        let (env, _admin, client) = setup();
+        let merchant = Address::generate(&env);
+        let expiry = env.ledger().timestamp() + 86400;
+        let id = client.create_campaign(&merchant, &100, &expiry);
+
+        client.record_claim(&id);
+        let after_first = client.get_campaign(&id).total_claimed;
+        assert_eq!(after_first, 1);
+
+        client.record_claim(&id);
+        let after_second = client.get_campaign(&id).total_claimed;
+        assert!(after_second > after_first, "invariant: total_claimed is monotonically increasing");
+    }
+
+    #[test]
+    #[should_panic(expected = "reward_amount must be positive")]
+    fn test_invariant_zero_reward_rejected() {
+        let (env, _admin, client) = setup();
+        let merchant = Address::generate(&env);
+        let expiry = env.ledger().timestamp() + 86400;
+        client.create_campaign(&merchant, &0, &expiry);
     }
 }
