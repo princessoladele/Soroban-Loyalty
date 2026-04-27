@@ -1,3 +1,7 @@
+import { initSentry, Sentry } from "./sentry";
+// Sentry must be initialized before any other imports that may throw
+initSentry();
+
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
@@ -88,14 +92,20 @@ app.use("/campaigns", campaignRouter);
 app.use("/", rewardRouter);
 app.use("/analytics", analyticsRouter);
 
+// Sentry error handler must be before other error handlers
+Sentry.setupExpressErrorHandler(app);
+
 // Global error handler — logs + alerts on unhandled errors
 app.use(errorAlertMiddleware);
 
 // Catch unhandled promise rejections and exceptions
 process.on("unhandledRejection", (reason) => {
-  logger.critical("Unhandled promise rejection", reason instanceof Error ? reason : new Error(String(reason)));
+  const err = reason instanceof Error ? reason : new Error(String(reason));
+  Sentry.captureException(err);
+  logger.critical("Unhandled promise rejection", err);
 });
 process.on("uncaughtException", (err) => {
+  Sentry.captureException(err);
   logger.critical("Uncaught exception", err);
   process.exit(1);
 });
