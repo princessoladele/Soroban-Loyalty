@@ -91,6 +91,15 @@ pub struct RewardsContract;
 
 #[contractimpl]
 impl RewardsContract {
+    /// Initialize the contract with cross-contract addresses.
+    ///
+    /// # Parameters
+    /// - `admin` — address authorized to administer this contract
+    /// - `token_contract` — address of the deployed LYT token contract
+    /// - `campaign_contract` — address of the deployed campaign contract
+    ///
+    /// # Panics
+    /// - `"already initialized"` — if called more than once
     pub fn initialize(
         env: Env,
         admin: Address,
@@ -184,6 +193,18 @@ impl RewardsContract {
         10_000 + extra.min(10_000)
     }
 
+    /// Claim the reward for `campaign_id` on behalf of `user`.
+    ///
+    /// The minted amount is scaled by an early-claim multiplier in the range
+    /// `[1×, 2×]` — users who claim earlier in the campaign lifetime receive more.
+    ///
+    /// # Security
+    /// Requires `user.require_auth()`. Claimed state is written **before** the
+    /// external mint call to prevent reentrancy.
+    ///
+    /// # Panics
+    /// - `"already claimed"` — if `user` has already claimed this campaign
+    /// - `"campaign not active"` — if the campaign is inactive or expired
     pub fn claim_reward(env: Env, user: Address, campaign_id: u64) {
         user.require_auth();
         Self::require_not_paused(&env);
@@ -337,6 +358,7 @@ impl RewardsContract {
             .publish((REWARD_REDEEMED, symbol_short!("user"), user), amount);
     }
 
+    /// Returns `true` if `user` has already claimed `campaign_id`.
     pub fn has_claimed_view(env: Env, user: Address, campaign_id: u64) -> bool {
         Self::has_claimed(&env, &user, campaign_id)
     }

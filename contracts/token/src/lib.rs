@@ -239,6 +239,15 @@ impl TokenContract {
         env.events().publish((BURN, symbol_short!("from"), from), (amount, new_supply));
     }
 
+    /// Transfer `amount` LYT tokens from `from` to `to`.
+    ///
+    /// # Security
+    /// Requires `from.require_auth()`.
+    ///
+    /// # Panics
+    /// - `"amount must be positive"` — if `amount <= 0`
+    /// - `"insufficient balance"` — if `from`'s balance is less than `amount`
+    /// - `"overflow"` — if `to`'s balance would overflow `i128`
     pub fn transfer(env: Env, from: Address, to: Address, amount: i128) {
         from.require_auth();
         Self::require_not_paused(&env);
@@ -289,10 +298,12 @@ impl TokenContract {
         Self::get_allowance(&env, &owner, &spender)
     }
 
+    /// Returns the LYT balance of `addr`.
     pub fn balance(env: Env, addr: Address) -> i128 {
         Self::read_balance(&env, &DataKey::Balance(addr))
     }
 
+    /// Returns the current total supply of LYT tokens.
     pub fn total_supply_view(env: Env) -> i128 {
         Self::total_supply(&env)
     }
@@ -305,14 +316,17 @@ impl TokenContract {
         Self::minter(&env)
     }
 
+    /// Returns the token name (e.g. `"LoyaltyToken"`).
     pub fn name(env: Env) -> String {
         env.storage().instance().get(&DataKey::Name).unwrap()
     }
 
+    /// Returns the token ticker symbol (e.g. `"LYT"`).
     pub fn symbol(env: Env) -> String {
         env.storage().instance().get(&DataKey::Symbol).unwrap()
     }
 
+    /// Returns the number of decimal places (e.g. `7`).
     pub fn decimals(env: Env) -> u32 {
         env.storage().instance().get(&DataKey::Decimals).unwrap()
     }
