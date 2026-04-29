@@ -15,6 +15,7 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
 export interface Campaign {
   id: number;
   merchant: string;
+  name?: string | null;
   reward_amount: number;
   expiration: number;
   active: boolean;
