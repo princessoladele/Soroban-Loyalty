@@ -1,3 +1,10 @@
+# [1.26.0](https://github.com/Dev-Odun-oss/Soroban-Loyalty/compare/v1.25.0...v1.26.0) (2026-04-29)
+
+
+### Features
+
+* audit log table for sensitive operations ([#22](https://github.com/Dev-Odun-oss/Soroban-Loyalty/issues/22)) ([a46eb16](https://github.com/Dev-Odun-oss/Soroban-Loyalty/commit/a46eb160f40f35ae418a290535d832eda1162fde))
+
 # [1.25.0](https://github.com/Dev-Odun-oss/Soroban-Loyalty/compare/v1.24.0...v1.25.0) (2026-04-29)
 
 
