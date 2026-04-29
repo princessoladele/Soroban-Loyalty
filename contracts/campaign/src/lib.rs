@@ -416,6 +416,9 @@ impl CampaignContract {
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
+mod expiry_prop_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use soroban_sdk::{

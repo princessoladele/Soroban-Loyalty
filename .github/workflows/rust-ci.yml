@@ -58,6 +58,11 @@ jobs:
           PROPTEST_CASES: "10000"
         run: cargo test --package soroban-loyalty-token fuzz_ -- --test-threads=1
 
+      - name: Run expiry property-based tests (1 000 cases)
+        env:
+          PROPTEST_CASES: "1000"
+        run: cargo test --package soroban-loyalty-campaign expiry_prop_tests -- --test-threads=1
+
       - name: Build contracts (wasm32)
         run: cargo build --target wasm32-unknown-unknown --release --workspace
 
