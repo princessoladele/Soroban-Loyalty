@@ -23,7 +23,13 @@
     },
     "actions": {
       "claim": "Claim Reward",
-      "claiming": "Claiming..."
+      "claiming": "Claiming...",
+      "deactivate": "Deactivate",
+      "deactivating": "Deactivating..."
+    },
+    "deactivate": {
+      "title": "Deactivate Campaign",
+      "warning": "This action is irreversible. The campaign will be permanently deactivated and can no longer be claimed by users."
     },
     "details": {
       "merchant": "Merchant",

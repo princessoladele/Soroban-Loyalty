@@ -98,3 +98,10 @@ export async function createCampaign(
     nativeToScVal(expiration, { type: "u64" }),
   ]);
 }
+
+export async function deactivateCampaign(campaignId: number, publicKey: string) {
+  return invokeContract(publicKey, CAMPAIGN_CONTRACT_ID, "deactivate_campaign", [
+    new Address(publicKey).toScVal(),
+    nativeToScVal(campaignId, { type: "u64" }),
+  ]);
+}

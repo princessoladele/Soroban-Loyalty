@@ -12,9 +12,10 @@ const PAGE_SIZE = 20;
 interface Props {
   campaigns: Campaign[];
   onDeactivate?: (id: number) => Promise<void>;
+  merchantPublicKey?: string;
 }
 
-export function CampaignTable({ campaigns, onDeactivate }: Props) {
+export function CampaignTable({ campaigns, onDeactivate, merchantPublicKey }: Props) {
   const [search, setSearch] = useState("");
   const [sortKey, setSortKey] = useState<SortKey>("id");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
