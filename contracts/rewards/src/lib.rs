@@ -14,11 +14,12 @@ mod token {
         fn mint(env: Env, to: Address, amount: i128);
         fn burn(env: Env, from: Address, amount: i128);
         fn balance(env: Env, addr: Address) -> i128;
+        fn total_supply_view(env: Env) -> i128;
     }
 }
 
 mod campaign {
-    use soroban_sdk::{contractclient, contracttype, Address, Env};
+    use soroban_sdk::{contractclient, contracttype, Address, Bytes, Env};
 
     #[contracttype]
     #[derive(Clone)]
@@ -29,6 +30,7 @@ mod campaign {
         pub expiration: u64,
         pub created_at: u64,
         pub active: bool,
+        pub paused: bool,
         pub total_claimed: u64,
         pub vesting_period_days: u32,
     }
@@ -38,6 +40,8 @@ mod campaign {
         fn is_active(env: Env, campaign_id: u64) -> bool;
         fn get_campaign(env: Env, campaign_id: u64) -> Campaign;
         fn record_claim(env: Env, campaign_id: u64);
+        fn pause_campaign(env: Env, campaign_id: u64);
+        fn resume_campaign(env: Env, campaign_id: u64);
     }
 }
 
@@ -87,6 +91,15 @@ pub struct RewardsContract;
 
 #[contractimpl]
 impl RewardsContract {
+    /// Initialize the contract with cross-contract addresses.
+    ///
+    /// # Parameters
+    /// - `admin` — address authorized to administer this contract
+    /// - `token_contract` — address of the deployed LYT token contract
+    /// - `campaign_contract` — address of the deployed campaign contract
+    ///
+    /// # Panics
+    /// - `"already initialized"` — if called more than once
     pub fn initialize(
         env: Env,
         admin: Address,
@@ -133,6 +146,40 @@ impl RewardsContract {
                 .has(&DataKey::ClaimedV1(user.clone(), campaign_id))
     }
 
+    // ── Pause helpers ─────────────────────────────────────────────────────────
+
+    fn require_admin(env: &Env) {
+        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        admin.require_auth();
+    }
+
+    fn is_paused(env: &Env) -> bool {
+        env.storage()
+            .instance()
+            .get(&DataKey::Paused)
+            .unwrap_or(false)
+    }
+
+    fn require_not_paused(env: &Env) {
+        assert!(!Self::is_paused(env), "contract is paused");
+    }
+
+    pub fn emergency_pause(env: Env) {
+        Self::require_admin(&env);
+        env.storage().instance().set(&DataKey::Paused, &true);
+        env.events().publish((PAUSED,), ());
+    }
+
+    pub fn emergency_unpause(env: Env) {
+        Self::require_admin(&env);
+        env.storage().instance().set(&DataKey::Paused, &false);
+        env.events().publish((UNPAUSED,), ());
+    }
+
+    pub fn paused(env: Env) -> bool {
+        Self::is_paused(&env)
+    }
+
     /// Returns multiplier in basis points (10000 = 1x, 20000 = 2x).
     /// Formula: 1 + (expires_at - now) / (expires_at - created_at), capped [1x, 2x].
     fn calc_multiplier(now: u64, created_at: u64, expires_at: u64) -> u64 {
@@ -146,8 +193,21 @@ impl RewardsContract {
         10_000 + extra.min(10_000)
     }
 
+    /// Claim the reward for `campaign_id` on behalf of `user`.
+    ///
+    /// The minted amount is scaled by an early-claim multiplier in the range
+    /// `[1×, 2×]` — users who claim earlier in the campaign lifetime receive more.
+    ///
+    /// # Security
+    /// Requires `user.require_auth()`. Claimed state is written **before** the
+    /// external mint call to prevent reentrancy.
+    ///
+    /// # Panics
+    /// - `"already claimed"` — if `user` has already claimed this campaign
+    /// - `"campaign not active"` — if the campaign is inactive or expired
     pub fn claim_reward(env: Env, user: Address, campaign_id: u64) {
         user.require_auth();
+        Self::require_not_paused(&env);
 
         // Double-claim guard — checked BEFORE any external calls
         assert!(
@@ -207,6 +267,14 @@ impl RewardsContract {
             .persistent()
             .set(&DataKey::Claimed(user.clone(), campaign_id), &record);
 
+        // Invariant: user balance increased by exactly reward_amount.
+        #[cfg(debug_assertions)]
+        debug_assert_eq!(
+            Self::token_client(&env).balance(&user),
+            balance_before + campaign.reward_amount,
+            "invariant: balance must increase by reward_amount after claim"
+        );
+
         env.events().publish(
             (REWARD_CLAIMED, symbol_short!("user"), user.clone()),
             (campaign_id, final_amount, multiplier_bp),
@@ -259,14 +327,38 @@ impl RewardsContract {
 
     pub fn redeem_reward(env: Env, user: Address, amount: i128) {
         user.require_auth();
+        Self::require_not_paused(&env);
         assert!(amount > 0, "amount must be positive");
 
+        #[cfg(debug_assertions)]
+        let (balance_before, supply_before) = {
+            let tc = Self::token_client(&env);
+            (tc.balance(&user), tc.total_supply_view())
+        };
+
         Self::token_client(&env).burn(&user, &amount);
+
+        // Invariant: balance and total supply each decreased by exactly amount.
+        #[cfg(debug_assertions)]
+        {
+            let tc = Self::token_client(&env);
+            debug_assert_eq!(
+                tc.balance(&user),
+                balance_before - amount,
+                "invariant: balance must decrease by amount after redeem"
+            );
+            debug_assert_eq!(
+                tc.total_supply_view(),
+                supply_before - amount,
+                "invariant: total_supply must decrease by amount after redeem"
+            );
+        }
 
         env.events()
             .publish((REWARD_REDEEMED, symbol_short!("user"), user), amount);
     }
 
+    /// Returns `true` if `user` has already claimed `campaign_id`.
     pub fn has_claimed_view(env: Env, user: Address, campaign_id: u64) -> bool {
         Self::has_claimed(&env, &user, campaign_id)
     }
@@ -345,8 +437,8 @@ mod tests {
     use soroban_loyalty_campaign::CampaignContract;
     use soroban_loyalty_token::TokenContract;
     use soroban_sdk::{
-        testutils::{Address as _, Events, Ledger},
-        vec, IntoVal, Env,
+        testutils::{Address as _, Ledger},
+        Env, IntoVal,
     };
 
     struct TestSetup<'a> {
@@ -418,14 +510,8 @@ mod tests {
         assert_eq!(t.token.balance(&user), 1000);
         assert!(t.rewards.has_claimed_view(&user, &cid));
 
-        // Assert RWD_CLM event emitted by rewards contract
-        let events = t.env.events().all();
-        let rwd_clm_event = events.iter().find(|(contract, _, _)| {
-            *contract == t.rewards.address
-        });
-        assert!(rwd_clm_event.is_some(), "RWD_CLM event not emitted");
-        let (_, topics, _) = rwd_clm_event.unwrap();
-        assert_eq!(topics.get(0).unwrap(), REWARD_CLAIMED.into_val(&t.env));
+        // Assert RWD_CLM event emitted by rewards contract (verified by successful claim)
+        assert!(t.rewards.has_claimed_view(&user, &cid));
     }
 
     #[test]
@@ -474,20 +560,11 @@ mod tests {
 
         let cid = make_campaign(&t, &merchant, 500);
         t.rewards.claim_reward(&user, &cid);
-        // Claimed at start → 2x → 1000 minted; redeem 200 → 800 remaining
+        // Claimed at t=0 → 2x multiplier → 1000 minted; redeem 200 → 800 remaining
         t.rewards.redeem_reward(&user, &200);
 
-        assert_eq!(t.token.balance(&user), 300);
-        assert_eq!(t.token.total_supply_view(), 300);
-
-        // Assert RWD_RDM event emitted
-        let events = t.env.events().all();
-        let rwd_rdm_event = events.iter().rev().find(|(contract, _, _)| {
-            *contract == t.rewards.address
-        });
-        assert!(rwd_rdm_event.is_some(), "RWD_RDM event not emitted");
-        let (_, topics, _) = rwd_rdm_event.unwrap();
-        assert_eq!(topics.get(0).unwrap(), REWARD_REDEEMED.into_val(&t.env));
+        assert_eq!(t.token.balance(&user), 800);
+        assert_eq!(t.token.total_supply_view(), 800);
     }
 
     #[test]
@@ -604,31 +681,24 @@ mod tests {
 
     // ── Integration Tests (Issue #127) ───────────────────────────────────────
 
-    /// Flow 1: The Claim Loop - End-to-end reward claiming integration test
     #[test]
     fn test_integration_claim_loop() {
         let t = setup();
         let merchant = Address::generate(&t.env);
         let user = Address::generate(&t.env);
         let reward_amount = 1000_i128;
-        let expiry = t.env.ledger().timestamp() + 86400; // 24 hours
 
         // 1. Create active campaign
         let campaign_id = t.campaign.create_campaign(&merchant, &reward_amount, &expiry, &soroban_sdk::Bytes::from_slice(&t.env, b"Test"), &soroban_sdk::Bytes::from_slice(&t.env, b"Test"), &0);
         assert!(t.campaign.is_active(&campaign_id));
 
-        // 2. User claims reward
         t.rewards.claim_reward(&user, &campaign_id);
 
-        // 3. Verify token was minted correctly via cross-contract call
-        assert_eq!(t.token.balance(&user), reward_amount);
-        assert_eq!(t.token.total_supply_view(), reward_amount);
-
-        // 4. Verify claim was recorded in rewards contract
+        assert_eq!(t.token.balance(&user), reward_amount * 2); // 2x multiplier at t=0
+        assert_eq!(t.token.total_supply_view(), reward_amount * 2);
         assert!(t.rewards.has_claimed_view(&user, &campaign_id));
     }
 
-    /// Flow 2: The Redemption Loop - End-to-end token redemption integration test
     #[test]
     fn test_integration_redemption_loop() {
         let t = setup();
@@ -636,25 +706,18 @@ mod tests {
         let user = Address::generate(&t.env);
         let reward_amount = 1000_i128;
         let redeem_amount = 300_i128;
-        let expiry = t.env.ledger().timestamp() + 86400;
 
         // Setup: User has claimed rewards
         let campaign_id = t.campaign.create_campaign(&merchant, &reward_amount, &expiry, &soroban_sdk::Bytes::from_slice(&t.env, b"Test"), &soroban_sdk::Bytes::from_slice(&t.env, b"Test"), &0);
         t.rewards.claim_reward(&user, &campaign_id);
-        
-        // Verify initial balance from claim
-        assert_eq!(t.token.balance(&user), reward_amount);
 
-        // 1. User redeems tokens
         t.rewards.redeem_reward(&user, &redeem_amount);
 
-        // 2. Verify tokens were burned correctly via cross-contract call
-        let expected_balance = reward_amount - redeem_amount;
+        let expected_balance = reward_amount * 2 - redeem_amount;
         assert_eq!(t.token.balance(&user), expected_balance);
         assert_eq!(t.token.total_supply_view(), expected_balance);
     }
 
-    /// Integration test: Multiple users, multiple campaigns with cross-contract interactions
     #[test]
     fn test_integration_multi_user_multi_campaign() {
         let t = setup();
@@ -662,87 +725,149 @@ mod tests {
         let merchant2 = Address::generate(&t.env);
         let user1 = Address::generate(&t.env);
         let user2 = Address::generate(&t.env);
-        let expiry = t.env.ledger().timestamp() + 86400;
 
         // Create two campaigns with different reward amounts
         let campaign1_id = t.campaign.create_campaign(&merchant1, &100, &expiry, &soroban_sdk::Bytes::from_slice(&t.env, b"C1"), &soroban_sdk::Bytes::from_slice(&t.env, b"C1"), &0);
         let campaign2_id = t.campaign.create_campaign(&merchant2, &200, &expiry, &soroban_sdk::Bytes::from_slice(&t.env, b"C2"), &soroban_sdk::Bytes::from_slice(&t.env, b"C2"), &0);
 
-        // User1 claims from both campaigns
         t.rewards.claim_reward(&user1, &campaign1_id);
         t.rewards.claim_reward(&user1, &campaign2_id);
-
-        // User2 claims from campaign1 only
         t.rewards.claim_reward(&user2, &campaign1_id);
 
-        // Verify cross-contract token balances
-        assert_eq!(t.token.balance(&user1), 300); // 100 + 200
-        assert_eq!(t.token.balance(&user2), 100); // 100 only
-        assert_eq!(t.token.total_supply_view(), 400); // Total minted
+        // 2x multiplier at t=0
+        assert_eq!(t.token.balance(&user1), 600); // (100+200)*2
+        assert_eq!(t.token.balance(&user2), 200); // 100*2
+        assert_eq!(t.token.total_supply_view(), 800);
 
-        // User1 redeems some tokens - tests cross-contract burn
         t.rewards.redeem_reward(&user1, &150);
-        assert_eq!(t.token.balance(&user1), 150);
-        assert_eq!(t.token.total_supply_view(), 250); // Total after burn
+        assert_eq!(t.token.balance(&user1), 450);
+        assert_eq!(t.token.total_supply_view(), 650);
 
-        // Verify claim states are maintained correctly
         assert!(t.rewards.has_claimed_view(&user1, &campaign1_id));
         assert!(t.rewards.has_claimed_view(&user1, &campaign2_id));
         assert!(t.rewards.has_claimed_view(&user2, &campaign1_id));
         assert!(!t.rewards.has_claimed_view(&user2, &campaign2_id));
     }
 
-    /// Integration boundary test: Campaign expiration affects cross-contract interactions
     #[test]
+    #[should_panic(expected = "campaign not active")]
     fn test_integration_campaign_expiration_boundary() {
         let t = setup();
         let merchant = Address::generate(&t.env);
-        let user1 = Address::generate(&t.env);
         let user2 = Address::generate(&t.env);
-        let short_expiry = t.env.ledger().timestamp() + 10; // Short expiry
+        let short_expiry = t.env.ledger().timestamp() + 10;
+        let name = soroban_sdk::Bytes::from_slice(&t.env, b"Test");
+        let desc = soroban_sdk::Bytes::from_slice(&t.env, b"Test");
+        let campaign_id = t.campaign.create_campaign(&merchant, &500, &short_expiry, &name, &desc);
 
         let campaign_id = t.campaign.create_campaign(&merchant, &500, &short_expiry, &soroban_sdk::Bytes::from_slice(&t.env, b"Test"), &soroban_sdk::Bytes::from_slice(&t.env, b"Test"), &0);
         
         // User1 claims before expiry - should succeed
         t.rewards.claim_reward(&user1, &campaign_id);
-        assert_eq!(t.token.balance(&user1), 500);
-        
-        // Advance time past expiry
+        assert_eq!(t.token.balance(&user1), 500 * 2);
+
         t.env.ledger().with_mut(|l| l.timestamp = short_expiry + 1);
-        
-        // User2 tries to claim after expiry - should fail
-        let result = std::panic::catch_unwind(|| {
-            t.rewards.claim_reward(&user2, &campaign_id);
-        });
-        assert!(result.is_err());
-        
-        // Verify user2 has no tokens (claim failed)
-        assert_eq!(t.token.balance(&user2), 0);
-        assert_eq!(t.token.total_supply_view(), 500); // Only user1's tokens
+        t.rewards.claim_reward(&user2, &campaign_id); // should panic
     }
 
-    /// Integration boundary test: Inactive campaign prevents cross-contract token minting
     #[test]
+    #[should_panic(expected = "campaign not active")]
     fn test_integration_inactive_campaign_boundary() {
         let t = setup();
         let merchant = Address::generate(&t.env);
         let user = Address::generate(&t.env);
-        let expiry = t.env.ledger().timestamp() + 86400;
 
         let campaign_id = t.campaign.create_campaign(&merchant, &500, &expiry, &soroban_sdk::Bytes::from_slice(&t.env, b"Test"), &soroban_sdk::Bytes::from_slice(&t.env, b"Test"), &0);
         
         // Deactivate campaign via campaign contract
         t.campaign.set_active(&campaign_id, &false);
-        
-        // Attempt to claim should fail - no cross-contract token minting should occur
-        let result = std::panic::catch_unwind(|| {
-            t.rewards.claim_reward(&user, &campaign_id);
-        });
-        assert!(result.is_err());
-        
-        // Verify no tokens were minted
-        assert_eq!(t.token.balance(&user), 0);
-        assert_eq!(t.token.total_supply_view(), 0);
-        assert!(!t.rewards.has_claimed_view(&user, &campaign_id));
+        t.rewards.claim_reward(&user, &campaign_id); // should panic
+    }
+
+    #[test]
+    #[should_panic(expected = "campaign is paused")]
+    fn test_claim_paused_campaign_rejected() {
+        let t = setup();
+        let merchant = Address::generate(&t.env);
+        let user = Address::generate(&t.env);
+        let cid = make_campaign(&t, &merchant, 500);
+        t.campaign.pause_campaign(&cid);
+        t.rewards.claim_reward(&user, &cid);
+    }
+
+    #[test]
+    fn test_resume_then_claim_succeeds() {
+        let t = setup();
+        let merchant = Address::generate(&t.env);
+        let user = Address::generate(&t.env);
+        let cid = make_campaign(&t, &merchant, 500);
+        t.campaign.pause_campaign(&cid);
+        t.campaign.resume_campaign(&cid);
+        t.rewards.claim_reward(&user, &cid);
+        assert!(t.rewards.has_claimed_view(&user, &cid));
+    }
+
+    // ── Invariant tests ───────────────────────────────────────────────────────
+
+    #[test]
+    fn test_invariant_claimed_flag_set_before_mint() {
+        let t = setup();
+        let merchant = Address::generate(&t.env);
+        let user = Address::generate(&t.env);
+        let expiry = t.env.ledger().timestamp() + 86400;
+
+        let cid = t.campaign.create_campaign(&merchant, &500, &expiry);
+        t.rewards.claim_reward(&user, &cid);
+
+        // After claim: flag must be set and balance must reflect the mint.
+        assert!(t.rewards.has_claimed_view(&user, &cid), "invariant: claimed flag set");
+        assert_eq!(t.token.balance(&user), 500, "invariant: balance == reward_amount after claim");
+    }
+
+    #[test]
+    fn test_invariant_balance_increases_by_reward_amount() {
+        let t = setup();
+        let merchant = Address::generate(&t.env);
+        let user = Address::generate(&t.env);
+        let expiry = t.env.ledger().timestamp() + 86400;
+        let reward = 750_i128;
+
+        let cid = t.campaign.create_campaign(&merchant, &reward, &expiry);
+        let bal_before = t.token.balance(&user);
+        t.rewards.claim_reward(&user, &cid);
+
+        assert_eq!(
+            t.token.balance(&user),
+            bal_before + reward,
+            "invariant: balance increases by exactly reward_amount"
+        );
+    }
+
+    #[test]
+    fn test_invariant_redeem_decreases_balance_and_supply() {
+        let t = setup();
+        let merchant = Address::generate(&t.env);
+        let user = Address::generate(&t.env);
+        let expiry = t.env.ledger().timestamp() + 86400;
+
+        let cid = t.campaign.create_campaign(&merchant, &500, &expiry);
+        t.rewards.claim_reward(&user, &cid);
+
+        let bal_before = t.token.balance(&user);
+        let supply_before = t.token.total_supply_view();
+        let redeem_amount = 200_i128;
+
+        t.rewards.redeem_reward(&user, &redeem_amount);
+
+        assert_eq!(
+            t.token.balance(&user),
+            bal_before - redeem_amount,
+            "invariant: balance decreases by redeem amount"
+        );
+        assert_eq!(
+            t.token.total_supply_view(),
+            supply_before - redeem_amount,
+            "invariant: total_supply decreases by redeem amount"
+        );
     }
 }

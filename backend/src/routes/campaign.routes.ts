@@ -8,6 +8,8 @@ import {
   restoreCampaign,
   CampaignFilters,
 } from "../services/campaign.service";
+import { redisClient } from "../lib/redis";
+import { logger } from "../logger";
 import { asyncHandler } from "../middleware/errorHandler";
 import { BadRequestError, NotFoundError } from "../utils/errors";
 
@@ -80,6 +82,27 @@ export const campaignRouter = Router();
 campaignRouter.get("/", asyncHandler(async (req: Request, res: Response) => {
   const limit = Math.min(parseInt(String(req.query.limit ?? "20"), 10) || 20, 100);
   const offset = parseInt(String(req.query.offset ?? "0"), 10) || 0;
+  
+  const cacheKey = `campaigns:list:${limit}:${offset}`;
+  try {
+    const cached = await redisClient.get(cacheKey);
+    if (cached) {
+      logger.debug(`Cache hit for ${cacheKey}`);
+      return res.json(JSON.parse(cached));
+    }
+  } catch (err) {
+    logger.error("Redis cache read error", err as Error);
+  }
+
+  logger.debug(`Cache miss for ${cacheKey}`);
+  const result = await getCampaigns(limit, offset);
+  
+  try {
+    await redisClient.setex(cacheKey, 30, JSON.stringify(result));
+  } catch (err) {
+    logger.error("Redis cache write error", err as Error);
+  }
+
 
   const filters: CampaignFilters = {};
   if (req.query.search) filters.search = String(req.query.search);

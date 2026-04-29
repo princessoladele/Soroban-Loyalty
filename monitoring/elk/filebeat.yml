@@ -1,0 +1,38 @@
+filebeat.inputs:
+  - type: container
+    paths:
+      - /var/lib/docker/containers/*/*.log
+    processors:
+      - add_docker_metadata:
+          host: "unix:///var/run/docker.sock"
+      # Drop sensitive fields before shipping
+      - drop_fields:
+          fields: ["jwt", "token", "secret", "password", "authorization", "private_key"]
+          ignore_missing: true
+
+processors:
+  - add_host_metadata: ~
+  - add_cloud_metadata: ~
+
+output.elasticsearch:
+  hosts: ["${ELASTICSEARCH_HOST:elasticsearch:9200}"]
+  index: "soroban-loyalty-%{+yyyy.MM.dd}"
+  username: "${ELASTICSEARCH_USER:elastic}"
+  password: "${ELASTICSEARCH_PASSWORD:changeme}"
+
+setup.ilm.enabled: true
+setup.ilm.rollover_alias: "soroban-loyalty"
+setup.ilm.pattern: "{now/d}-000001"
+# 30 days hot, 90 days cold retention
+setup.ilm.policy: |
+  {
+    "policy": {
+      "phases": {
+        "hot":  { "min_age": "0ms",  "actions": { "rollover": { "max_age": "30d" } } },
+        "cold": { "min_age": "30d",  "actions": { "freeze": {} } },
+        "delete": { "min_age": "90d", "actions": { "delete": {} } }
+      }
+    }
+  }
+
+logging.level: warning

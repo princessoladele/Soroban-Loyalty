@@ -30,3 +30,8 @@ variable "db_password" {
   type        = string
   sensitive   = true
 }
+
+variable "oidc_provider_arn" {
+  description = "EKS OIDC provider ARN for IRSA (used by backup CronJob)"
+  type        = string
+}

@@ -25,6 +25,7 @@ process.on("unhandledRejection", (reason) => {
   );
 });
 process.on("uncaughtException", (err) => {
+  Sentry.captureException(err);
   logger.critical("Uncaught exception", err);
   process.exit(1);
 });

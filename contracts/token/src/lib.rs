@@ -45,6 +45,8 @@ const MINT: Symbol = symbol_short!("MINT");
 const TRANSFER: Symbol = symbol_short!("TRANSFER");
 const BURN: Symbol = symbol_short!("BURN");
 const APPROVAL: Symbol = symbol_short!("APPROVAL");
+const PAUSED: Symbol = symbol_short!("PAUSED");
+const UNPAUSED: Symbol = symbol_short!("UNPAUSED");
 
 // ── Contract ──────────────────────────────────────────────────────────────────
 
@@ -222,12 +224,14 @@ impl TokenContract {
 
     pub fn burn(env: Env, from: Address, amount: i128) {
         from.require_auth();
+        Self::require_not_paused(&env);
         assert!(amount > 0, "amount must be positive");
 
         let key = DataKey::Balance(from.clone());
         let bal = Self::read_balance(&env, &key);
         assert!(bal >= amount, "insufficient balance");
-        Self::write_balance(&env, &key, bal - amount);
+        let new_bal = bal - amount;
+        Self::write_balance(&env, &key, new_bal);
 
         let new_supply = Self::total_supply(&env).checked_sub(amount).expect("underflow");
         Self::set_total_supply(&env, new_supply);
@@ -235,8 +239,18 @@ impl TokenContract {
         env.events().publish((BURN, symbol_short!("from"), from), (amount, new_supply));
     }
 
+    /// Transfer `amount` LYT tokens from `from` to `to`.
+    ///
+    /// # Security
+    /// Requires `from.require_auth()`.
+    ///
+    /// # Panics
+    /// - `"amount must be positive"` — if `amount <= 0`
+    /// - `"insufficient balance"` — if `from`'s balance is less than `amount`
+    /// - `"overflow"` — if `to`'s balance would overflow `i128`
     pub fn transfer(env: Env, from: Address, to: Address, amount: i128) {
         from.require_auth();
+        Self::require_not_paused(&env);
         assert!(amount > 0, "amount must be positive");
 
         let from_key = DataKey::Balance(from.clone());
@@ -253,6 +267,7 @@ impl TokenContract {
 
     pub fn approve(env: Env, owner: Address, spender: Address, amount: i128) {
         owner.require_auth();
+        Self::require_not_paused(&env);
         assert!(amount >= 0, "amount must be non-negative");
         Self::set_allowance(&env, &owner, &spender, amount);
         env.events().publish((APPROVAL, symbol_short!("owner"), owner), (spender, amount));
@@ -260,6 +275,7 @@ impl TokenContract {
 
     pub fn transfer_from(env: Env, spender: Address, from: Address, to: Address, amount: i128) {
         spender.require_auth();
+        Self::require_not_paused(&env);
         assert!(amount > 0, "amount must be positive");
 
         let current = Self::get_allowance(&env, &from, &spender);
@@ -282,10 +298,12 @@ impl TokenContract {
         Self::get_allowance(&env, &owner, &spender)
     }
 
+    /// Returns the LYT balance of `addr`.
     pub fn balance(env: Env, addr: Address) -> i128 {
         Self::read_balance(&env, &DataKey::Balance(addr))
     }
 
+    /// Returns the current total supply of LYT tokens.
     pub fn total_supply_view(env: Env) -> i128 {
         Self::total_supply(&env)
     }
@@ -298,14 +316,17 @@ impl TokenContract {
         Self::minter(&env)
     }
 
+    /// Returns the token name (e.g. `"LoyaltyToken"`).
     pub fn name(env: Env) -> String {
         env.storage().instance().get(&DataKey::Name).unwrap()
     }
 
+    /// Returns the token ticker symbol (e.g. `"LYT"`).
     pub fn symbol(env: Env) -> String {
         env.storage().instance().get(&DataKey::Symbol).unwrap()
     }
 
+    /// Returns the number of decimal places (e.g. `7`).
     pub fn decimals(env: Env) -> u32 {
         env.storage().instance().get(&DataKey::Decimals).unwrap()
     }
@@ -436,4 +457,49 @@ mod tests {
         assert_eq!(client.balance(&alice), 200);
         assert_eq!(client.total_supply_view(), 400);
     }
+
+    // ── Pause tests ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_pause_and_unpause() {
+        let (_env, _admin, client) = setup();
+        assert!(!client.paused());
+        client.emergency_pause();
+        assert!(client.paused());
+        client.emergency_unpause();
+        assert!(!client.paused());
+    }
+
+    #[test]
+    #[should_panic(expected = "contract is paused")]
+    fn test_mint_blocked_when_paused() {
+        let (env, _admin, client) = setup();
+        let user = Address::generate(&env);
+        client.emergency_pause();
+        client.mint(&user, &100);
+    }
+
+    #[test]
+    #[should_panic(expected = "contract is paused")]
+    fn test_transfer_blocked_when_paused() {
+        let (env, _admin, client) = setup();
+        let alice = Address::generate(&env);
+        let bob = Address::generate(&env);
+        client.mint(&alice, &500);
+        client.emergency_pause();
+        client.transfer(&alice, &bob, &100);
+    }
+
+    #[test]
+    #[should_panic(expected = "contract is paused")]
+    fn test_burn_blocked_when_paused() {
+        let (env, _admin, client) = setup();
+        let user = Address::generate(&env);
+        client.mint(&user, &300);
+        client.emergency_pause();
+        client.burn(&user, &100);
+    }
 }
+
+#[cfg(test)]
+mod fuzz_tests;

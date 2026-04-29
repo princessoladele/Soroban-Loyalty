@@ -130,3 +130,9 @@ Your PR description should include:
 - A clear summary of the changes.
 - The issue number it addresses (if applicable).
 - Steps to verify the changes.
+
+---
+
+## Code of Conduct
+
+Please review and follow our [Code of Conduct](./CODE_OF_CONDUCT.md).

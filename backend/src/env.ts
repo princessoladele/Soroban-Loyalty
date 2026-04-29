@@ -52,6 +52,10 @@ const envSchema = z.object({
    */
   DATABASE_URL: z.string().url().optional(),
 
+  // ── Redis ───────────────────────────────────────────────────────────────────
+  /** Redis connection URL. Optional, defaults to local instance. */
+  REDIS_URL: z.string().url().optional(),
+
   // ── AWS Secrets Manager ─────────────────────────────────────────────────────
   /** ARN / name of the JSON secret in AWS Secrets Manager. Optional. */
   SECRETS_ARN: z.string().optional(),

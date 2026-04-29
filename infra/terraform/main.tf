@@ -58,6 +58,7 @@ module "cache" {
 }
 
 module "storage" {
-  source      = "./modules/storage"
-  environment = var.environment
+  source            = "./modules/storage"
+  environment       = var.environment
+  oidc_provider_arn = var.oidc_provider_arn
 }

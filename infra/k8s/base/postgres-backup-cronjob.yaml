@@ -1,0 +1,109 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: postgres-backup
+  namespace: soroban-loyalty
+spec:
+  schedule: "0 2 * * *"   # daily at 02:00 UTC
+  timeZone: "UTC"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        spec:
+          restartPolicy: Never
+          serviceAccountName: postgres-backup
+          containers:
+            - name: backup
+              image: postgres:16-alpine
+              command: ["/bin/sh", "-c"]
+              args:
+                - |
+                  apk add --no-cache aws-cli curl && /scripts/backup-postgres.sh
+              env:
+                - name: PGHOST
+                  value: postgres
+                - name: PGPORT
+                  value: "5432"
+                - name: PGDATABASE
+                  value: soroban_loyalty
+                - name: PGUSER
+                  valueFrom:
+                    secretKeyRef:
+                      name: soroban-loyalty-secrets
+                      key: POSTGRES_USER
+                - name: PGPASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: soroban-loyalty-secrets
+                      key: POSTGRES_PASSWORD
+                - name: S3_BACKUP_BUCKET
+                  valueFrom:
+                    secretKeyRef:
+                      name: soroban-loyalty-secrets
+                      key: S3_BACKUP_BUCKET
+                - name: SLACK_WEBHOOK_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: soroban-loyalty-secrets
+                      key: SLACK_WEBHOOK_URL
+                      optional: true
+              volumeMounts:
+                - name: backup-script
+                  mountPath: /scripts
+              resources:
+                requests:
+                  cpu: "100m"
+                  memory: "128Mi"
+                limits:
+                  cpu: "500m"
+                  memory: "512Mi"
+          volumes:
+            - name: backup-script
+              configMap:
+                name: postgres-backup-script
+                defaultMode: 0755
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-backup-script
+  namespace: soroban-loyalty
+data:
+  backup-postgres.sh: |
+    #!/usr/bin/env sh
+    set -eu
+    TIMESTAMP=$(date -u +"%Y%m%dT%H%M%SZ")
+    FILENAME="backup-${TIMESTAMP}.sql.gz"
+    S3_KEY="postgres/${FILENAME}"
+    TMP_FILE="/tmp/${FILENAME}"
+
+    alert_slack() {
+      [ -z "${SLACK_WEBHOOK_URL:-}" ] && return 0
+      curl -s -X POST "${SLACK_WEBHOOK_URL}" \
+        -H "Content-Type: application/json" \
+        -d "{\"text\":\"$1\"}" || true
+    }
+
+    trap 'rm -f "${TMP_FILE}"' EXIT
+    trap 'alert_slack ":x: *[soroban-loyalty]* PostgreSQL backup FAILED at $(date -u +%Y-%m-%dT%H:%M:%SZ)"; exit 1' ERR
+
+    pg_dump --host="${PGHOST}" --port="${PGPORT:-5432}" --username="${PGUSER}" \
+      --no-password --format=plain "${PGDATABASE}" | gzip -9 > "${TMP_FILE}"
+
+    aws s3 cp "${TMP_FILE}" "s3://${S3_BACKUP_BUCKET}/${S3_KEY}" \
+      --sse AES256 --no-progress
+
+    alert_slack ":white_check_mark: *[soroban-loyalty]* PostgreSQL backup succeeded: \`${S3_KEY}\`"
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: postgres-backup
+  namespace: soroban-loyalty
+  annotations:
+    # Bind to an IAM role that has s3:PutObject on the backup bucket
+    eks.amazonaws.com/role-arn: "${BACKUP_IAM_ROLE_ARN}"

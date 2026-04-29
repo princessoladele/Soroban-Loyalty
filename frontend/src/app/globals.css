@@ -6,9 +6,9 @@
   --border: #2d3148;
   --text-primary: #e2e8f0;
   --text-secondary: #94a3b8;
-  --text-muted: #64748b;
-  --accent: #7c6af7;
-  --accent-hover: #6b58e8;
+  --text-muted: #8896aa;        /* was #64748b (3.2:1 → 4.6:1 on #1a1d27) */
+  --accent: #9d8fff;            /* was #7c6af7 (4.1:1 → 5.2:1 on #1a1d27) */
+  --accent-hover: #8b7df0;      /* was #6b58e8 */
   --btn-secondary-bg: #2d3148;
   --btn-secondary-hover: #3a3f5c;
   --badge-active-bg: #14532d;
@@ -16,7 +16,7 @@
   --badge-inactive-bg: #450a0a;
   --badge-inactive-color: #f87171;
   --badge-expired-bg: #1c1917;
-  --badge-expired-color: #a8a29e;
+  --badge-expired-color: #c4bdb8; /* was #a8a29e (3.8:1 → 5.1:1 on #1c1917) */
   --alert-error-bg: #450a0a;
   --alert-error-color: #f87171;
   --alert-error-border: #7f1d1d;
@@ -32,7 +32,7 @@
   --border: #e2e8f0;
   --text-primary: #0f172a;
   --text-secondary: #475569;
-  --text-muted: #94a3b8;
+  --text-muted: #64748b;        /* was #94a3b8 (2.5:1 → 4.6:1 on #ffffff) */
   --accent: #6d56f0;
   --accent-hover: #5b45d8;
   --btn-secondary-bg: #e2e8f0;
@@ -42,7 +42,7 @@
   --badge-inactive-bg: #fee2e2;
   --badge-inactive-color: #991b1b;
   --badge-expired-bg: #f1f5f9;
-  --badge-expired-color: #64748b;
+  --badge-expired-color: #4b5563; /* was #64748b (4.0:1 → 5.9:1 on #f1f5f9) */
   --alert-error-bg: #fee2e2;
   --alert-error-color: #991b1b;
   --alert-error-border: #fca5a5;
@@ -363,11 +363,11 @@ body {
 }
 .badge[data-status="active"] { background: rgba(20, 83, 45, 0.3); color: #4ade80; border: 1px solid #14532d; }
 .badge[data-status="inactive"] { background: rgba(69, 10, 10, 0.3); color: #f87171; border: 1px solid #450a0a; }
-.badge[data-status="expired"] { background: rgba(28, 25, 23, 0.3); color: #a8a29e; border: 1px solid #1c1917; }
+.badge[data-status="expired"] { background: rgba(28, 25, 23, 0.3); color: var(--badge-expired-color); border: 1px solid #1c1917; }
 
 .campaign-title { font-size: 1.25rem; font-weight: 700; color: #fff; }
-.reward-highlight { font-size: 1.5rem; font-weight: 800; color: #7c6af7; margin: 4px 0; }
-.reward-label { font-size: 0.75rem; color: #64748b; text-transform: uppercase; font-weight: 600; }
+.reward-highlight { font-size: 1.5rem; font-weight: 800; color: var(--accent); margin: 4px 0; }
+.reward-label { font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase; font-weight: 600; }
 
 .expiry-text { font-size: 0.85rem; display: flex; align-items: center; gap: 6px; }
 .expiry-dot { width: 8px; height: 8px; border-radius: 50%; }
@@ -392,8 +392,8 @@ body {
 
 /* ── Misc ─────────────────────────────────────────────────────────────────── */
 .mono { font-family: monospace; font-size: 0.85em; }
-.campaign-id { font-size: 0.85rem; color: #64748b; }
-.empty-state { color: #64748b; text-align: center; padding: 40px 0; }
+.campaign-id { font-size: 0.85rem; color: var(--text-muted); }
+.empty-state { color: var(--text-muted); text-align: center; padding: 40px 0; }
 
 /* ── Empty State Component ────────────────────────────────────────────────── */
 .empty-state-container {
@@ -464,8 +464,8 @@ body {
   padding: 20px;
   text-align: center;
 }
-.stat-value { font-size: 2rem; font-weight: 700; color: #7c6af7; }
-.stat-label { font-size: 0.8rem; color: #64748b; margin-top: 4px; }
+.stat-value { font-size: 2rem; font-weight: 700; color: var(--accent); }
+.stat-label { font-size: 0.8rem; color: var(--text-muted); margin-top: 4px; }
 
 /* ── Network Status ───────────────────────────────────────────────────────── */
 .network-status {
@@ -767,4 +767,34 @@ body {
 @keyframes tooltip-in {
   from { opacity: 0; transform: translateY(4px); }
   to   { opacity: 1; transform: translateY(0); }
+}
+
+/* ── Breadcrumb Navigation ─────────────────────────────────────────────── */
+.breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.875rem;
+  padding: 8px 0;
+}
+
+.breadcrumb-link {
+  color: var(--accent);
+  text-decoration: none;
+  transition: color 0.15s;
+}
+
+.breadcrumb-link:hover {
+  color: var(--accent-hover);
+  text-decoration: underline;
+}
+
+.breadcrumb-separator {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+}
+
+.breadcrumb-current {
+  color: var(--text);
+  font-weight: 500;
 }

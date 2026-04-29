@@ -29,6 +29,7 @@ import { env } from "../env";
 
 const REWARDS_CONTRACT  = env.REWARDS_CONTRACT_ID;
 const CAMPAIGN_CONTRACT = env.CAMPAIGN_CONTRACT_ID;
+const TOKEN_CONTRACT    = env.TOKEN_CONTRACT_ID;
 
 const POLL_INTERVAL_MS   = 5_000;   // base happy-path interval
 const BACKOFF_BASE_MS    = 2_000;   // first retry wait
@@ -45,7 +46,7 @@ let consecutiveFailures    = 0;
 let indexerInterval: ReturnType<typeof setInterval> | null = null;
 
 // Persist cursor so we don't re-process events on restart
-async function getCursor(): Promise<string | undefined> {
+export async function getCursor(): Promise<string | undefined> {
   const { rows } = await pool.query<{ value: string }>(
     `SELECT value FROM indexer_state WHERE key = 'cursor' LIMIT 1`
   );
@@ -84,6 +85,15 @@ async function deadLetterEvent(
   }
   indexerDeadLetters.inc();
   logger.error(`[indexer] Dead-lettered event txHash=${event.txHash}`, lastError);
+}
+
+export async function ensureIndexerTable(): Promise<void> {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS indexer_state (
+      key VARCHAR(50) PRIMARY KEY,
+      value TEXT NOT NULL
+    )
+  `);
 }
 
 /** Ensure the dead_letter_events table exists. */
@@ -337,3 +347,17 @@ export function stopIndexer(): void {
     console.log("[indexer] stopped");
   }
 }
+
+export function calcBackoff(failures: number): number {
+  if (failures <= 0) return BACKOFF_BASE_MS;
+  const delay = BACKOFF_BASE_MS * Math.pow(BACKOFF_MULTIPLIER, failures - 1);
+  const maxJitter = delay * JITTER_FACTOR;
+  const jitter = Math.random() * (maxJitter * 2) - maxJitter;
+  return Math.max(BACKOFF_BASE_MS, Math.min(BACKOFF_MAX_MS, delay + jitter));
+}
+
+export function resetBackoff(): void {
+  currentBackoffMs = 0;
+}
+
+export const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));

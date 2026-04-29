@@ -2,7 +2,7 @@ import { Request } from "express";
 import { env } from "./env";
 import { getCorrelationId } from "./correlation";
 
-export type AlertLevel = "critical" | "error" | "warn" | "info";
+export type AlertLevel = "critical" | "error" | "warn" | "info" | "debug";
 
 interface AlertPayload {
   level: AlertLevel;
@@ -43,6 +43,10 @@ function withCorrelation(obj: Record<string, unknown>): Record<string, unknown> 
 }
 
 export const logger = {
+  debug(message: string, context?: Record<string, unknown>) {
+    console.debug(JSON.stringify(withCorrelation({ level: "debug", message, ...context, ts: new Date().toISOString() })));
+  },
+
   info(message: string, context?: Record<string, unknown>) {
     console.log(JSON.stringify(withCorrelation({ level: "info", message, ...context, ts: new Date().toISOString() })));
   },
