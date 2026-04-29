@@ -1,4 +1,5 @@
 const withNextIntl = require('next-intl/plugin')();
+const { withSentryConfig } = require('@sentry/nextjs');
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
@@ -58,4 +59,13 @@ const nextConfig = {
   },
 };
 
-module.exports = withNextIntl(nextConfig);
+module.exports = withSentryConfig(withNextIntl(nextConfig), {
+  // Upload source maps to Sentry on build (requires SENTRY_AUTH_TOKEN)
+  silent: true,
+  org: process.env.SENTRY_ORG,
+  project: process.env.SENTRY_PROJECT,
+  // Automatically tree-shake Sentry logger statements in production
+  disableLogger: true,
+  // Hides source maps from the browser bundle
+  hideSourceMaps: true,
+});
